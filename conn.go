@@ -3,6 +3,7 @@ package websocket
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -46,6 +47,14 @@ type Conn struct {
 	wg sync.WaitGroup
 
 	ctx context.Context
+
+	cancel     context.CancelFunc
+	cancelOnce sync.Once
+}
+
+// Ctx returns the context associated with the connection.
+func (c *Conn) Ctx() context.Context {
+	return c.ctx
 }
 
 // ID returns a unique identifier for the connection.
@@ -116,6 +125,7 @@ func (c *Conn) readLoop() {
 		if err != nil {
 			select {
 			case c.errch <- closeError{err: err}:
+				// log.Printf("readLoop error: %v\n", err)
 			default:
 			}
 
@@ -124,14 +134,22 @@ func (c *Conn) readLoop() {
 			break
 		}
 
-		isClose := fr.IsClose()
-
 		c.input <- fr
+
+		isClose := fr.IsClose()
 
 		if isClose {
 			break
 		}
+
+		select {
+		case <-c.ctx.Done():
+			break
+		}
 	}
+
+	// close(c.input)
+	// fmt.Printf("readLoop end\n")
 }
 
 type closeError struct {
@@ -148,14 +166,15 @@ func (ce closeError) Error() string {
 
 func (c *Conn) writeLoop() {
 	defer c.wg.Done()
-
 loop:
 	for {
 		select {
 		case fr := <-c.output:
 			if err := c.writeFrame(fr); err != nil {
 				select {
+
 				case c.errch <- closeError{err}:
+					// log.Printf("writeLoop error: %v\n", err)
 				default:
 				}
 			}
@@ -165,24 +184,29 @@ loop:
 			ReleaseFrame(fr)
 
 			if isClose {
-				return
+				break loop
 			}
 		case <-c.closer:
+			break loop
+		case <-c.ctx.Done():
 			break loop
 		}
 	}
 
+	// close(c.output)
 	// flush all the frames
-	for n := len(c.output); n >= 0; n-- {
-		fr, ok := <-c.output
-		if !ok {
-			break
-		}
+	// for fr := range c.output {
+	// 	// fr, ok := <-c.output
+	// 	// if !ok {
+	// 	// 	break
+	// 	// }
 
-		if err := c.writeFrame(fr); err != nil {
-			break
-		}
-	}
+	// 	if err := c.writeFrame(fr); err != nil {
+	// 		break
+	// 	}
+	// }
+
+	// fmt.Printf("writeLoop end\n")
 }
 
 func (c *Conn) writeFrame(fr *Frame) error {
@@ -213,11 +237,40 @@ func (c *Conn) Ping(data []byte) {
 func (c *Conn) Write(data []byte) (int, error) {
 	n := len(data)
 
+	if c == nil {
+		return n, errors.New("Conn is nil")
+	}
+	if c.IsClosed() {
+		return n, errors.New("Conn is closed")
+	}
+
 	fr := AcquireFrame()
 
 	fr.SetFin()
 	fr.SetPayload(data)
 	fr.SetText()
+
+	c.WriteFrame(fr)
+
+	return n, nil
+}
+
+func (c *Conn) WriteBinary(data []byte) (int, error) {
+
+	n := len(data)
+
+	if c == nil {
+		return n, errors.New("Conn is nil")
+	}
+	if c.IsClosed() {
+		return n, errors.New("Conn is closed")
+	}
+
+	fr := AcquireFrame()
+
+	fr.SetFin()
+	fr.SetPayload(data)
+	fr.SetBinary()
 
 	c.WriteFrame(fr)
 
@@ -245,10 +298,19 @@ func (c *Conn) CloseDetail(status StatusCode, reason string) {
 
 		c.WriteFrame(fr)
 
-		c.closeOnce.Do(func() { close(c.closer) })
+		c.closeOnce.Do(func() {
+			close(c.closer)
+		})
 	}
+	c.cancelOnce.Do(func() {
+		c.cancel()
+	})
 
 	return
+}
+
+func (c *Conn) IsClosed() bool {
+	return c.isClosed()
 }
 
 func (c *Conn) isClosed() bool {

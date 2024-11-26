@@ -1,4 +1,4 @@
-module github.com/dgrr/websocket
+module github.com/miles990/websocket
 
 go 1.6
 

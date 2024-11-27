@@ -145,6 +145,7 @@ func (c *Conn) readLoop() {
 		select {
 		case <-c.ctx.Done():
 			break
+		default:
 		}
 	}
 
@@ -190,6 +191,7 @@ loop:
 			break loop
 		case <-c.ctx.Done():
 			break loop
+		default:
 		}
 	}
 

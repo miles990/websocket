@@ -47,14 +47,6 @@ type Conn struct {
 	wg sync.WaitGroup
 
 	ctx context.Context
-
-	cancel     context.CancelFunc
-	cancelOnce sync.Once
-}
-
-// Ctx returns the context associated with the connection.
-func (c *Conn) Ctx() context.Context {
-	return c.ctx
 }
 
 // ID returns a unique identifier for the connection.
@@ -125,7 +117,6 @@ func (c *Conn) readLoop() {
 		if err != nil {
 			select {
 			case c.errch <- closeError{err: err}:
-				// log.Printf("readLoop error: %v\n", err)
 			default:
 			}
 
@@ -134,23 +125,15 @@ func (c *Conn) readLoop() {
 			break
 		}
 
-		c.input <- fr
-
 		isClose := fr.IsClose()
+
+		c.input <- fr
 
 		if isClose {
 			break
 		}
-
-		select {
-		case <-c.ctx.Done():
-			break
-		default:
-		}
 	}
-
-	// close(c.input)
-	// fmt.Printf("readLoop end\n")
+	close(c.input)
 }
 
 type closeError struct {
@@ -167,15 +150,14 @@ func (ce closeError) Error() string {
 
 func (c *Conn) writeLoop() {
 	defer c.wg.Done()
+
 loop:
 	for {
 		select {
 		case fr := <-c.output:
 			if err := c.writeFrame(fr); err != nil {
 				select {
-
 				case c.errch <- closeError{err}:
-					// log.Printf("writeLoop error: %v\n", err)
 				default:
 				}
 			}
@@ -189,26 +171,22 @@ loop:
 			}
 		case <-c.closer:
 			break loop
-		case <-c.ctx.Done():
-			break loop
-		default:
 		}
 	}
+	close(c.output)
 
-	// close(c.output)
 	// flush all the frames
-	// for fr := range c.output {
-	// 	// fr, ok := <-c.output
-	// 	// if !ok {
-	// 	// 	break
-	// 	// }
+	for n := len(c.output); n >= 0; n-- {
+		fr, ok := <-c.output
+		if !ok {
+			break
+		}
 
-	// 	if err := c.writeFrame(fr); err != nil {
-	// 		break
-	// 	}
-	// }
-
-	// fmt.Printf("writeLoop end\n")
+		if err := c.writeFrame(fr); err != nil {
+			break
+		}
+	}
+	// fmt.Printf("[%v]writeLoop end\n", c.id)
 }
 
 func (c *Conn) writeFrame(fr *Frame) error {
@@ -300,13 +278,8 @@ func (c *Conn) CloseDetail(status StatusCode, reason string) {
 
 		c.WriteFrame(fr)
 
-		c.closeOnce.Do(func() {
-			close(c.closer)
-		})
+		c.closeOnce.Do(func() { close(c.closer) })
 	}
-	c.cancelOnce.Do(func() {
-		c.cancel()
-	})
 
 	return
 }

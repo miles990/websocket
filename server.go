@@ -212,7 +212,7 @@ func (s *Server) Upgrade(ctx *fasthttp.RequestCtx) {
 				conn := acquireConn(c)
 				conn.id = atomic.AddUint64(&s.nextID, 1)
 				// establishing default options
-				conn.ctx, conn.cancel = context.WithCancel(nctx)
+				conn.ctx = nctx
 
 				if s.openHandler != nil {
 					s.openHandler(conn)
@@ -384,15 +384,12 @@ loop:
 	c.c.Close()
 
 	c.wg.Wait()
-
-	close(c.input)
-	close(c.output)
-	close(c.errch)
-
-	// fmt.Printf("serveConn end\n")
 }
 
 func (s *Server) handleFrame(c *Conn, fr *Frame) {
+	if c == nil || fr == nil {
+		return
+	}
 	// TODO: error if not masked
 	if fr.IsMasked() {
 		fr.Unmask()
@@ -468,9 +465,7 @@ func (s *Server) handlePong(c *Conn, data []byte) {
 }
 
 func (s *Server) handleClose(c *Conn, fr *Frame) {
-	defer c.closeOnce.Do(func() {
-		close(c.closer)
-	})
+	defer c.closeOnce.Do(func() { close(c.closer) })
 	c.errch <- func() error {
 		if fr.Status() != StatusNone {
 			return Error{
